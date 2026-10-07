@@ -1,4 +1,3 @@
-
 #include "paintarea.h"
 #include "utils/ExifLoader.h"
 
@@ -742,24 +741,52 @@ bool PaintArea::handleGradientToolReentry(ToolType tool) {
     if (tool == ToolType::Gradient && currentTool == ToolType::Gradient) { openGradientSettings(); return true; }
     return false;
 }
-void PaintArea::resetStateForToolSwitch(ToolType tool) {
-    if (tool != ToolType::PenBezier) { bakeActivePath(); m_maskEdit.resetBezier(); }
-    bool preservarSeleccion = preserveSelectionOnToolSwitch;
-    if (!preservarSeleccion) {
-        if (tool != ToolType::Select && tool != ToolType::SelectFree &&
-            tool != ToolType::MagicWand && tool != ToolType::LassoExtract && tool != ToolType::LassoDelete)
-            bakeSelection();
-    } else preserveSelectionOnToolSwitch = false;
-    if (tool != ToolType::SelectFree && tool != ToolType::LassoExtract && tool != ToolType::LassoDelete) {
-        cancelSelectFreeVector(); cancelSelectFreeElement();
-    }
-    if (tool != ToolType::Text) bakeTextFrame();
-    if (tool != ToolType::Gradient) drawingGradient = false;
-    if (tool != ToolType::Move) { movingLayer = false; moveLayerIdx = -1; }
-    if (tool != ToolType::Clone) cloneIsStamping = false;
-    if (tool != ToolType::Deform) m_deform.reset();
-    if (stack.isEditingMask() && !herramientaDePintura() && tool != ToolType::PenBezier) stack.exitMaskEdit();
+
+bool PaintArea::toolKeepsSelectionAlive(ToolType tool) const {
+    return tool == ToolType::Select
+        || tool == ToolType::SelectFree
+        || tool == ToolType::MagicWand
+        || tool == ToolType::LassoExtract
+        || tool == ToolType::LassoDelete;
 }
+
+bool PaintArea::toolKeepsFreeModeAlive(ToolType tool) const {
+    return tool == ToolType::SelectFree
+        || tool == ToolType::LassoExtract
+        || tool == ToolType::LassoDelete;
+}
+
+void PaintArea::resetSelectionForNewTool(ToolType tool) {
+    if (preserveSelectionOnToolSwitch) {
+        preserveSelectionOnToolSwitch = false;
+    } else if (!toolKeepsSelectionAlive(tool)) {
+        bakeSelection();
+    }
+    if (!toolKeepsFreeModeAlive(tool)) {
+        cancelSelectFreeVector();
+        cancelSelectFreeElement();
+    }
+}
+
+void PaintArea::resetToolModes(ToolType tool) {
+    if (tool != ToolType::Text)     bakeTextFrame();
+    if (tool != ToolType::Gradient) drawingGradient = false;
+    if (tool != ToolType::Move)     { movingLayer = false; moveLayerIdx = -1; }
+    if (tool != ToolType::Clone)    cloneIsStamping = false;
+    if (tool != ToolType::Deform)   m_deform.reset();
+}
+
+void PaintArea::resetStateForToolSwitch(ToolType tool) {
+    if (tool != ToolType::PenBezier) {
+        bakeActivePath();
+        m_maskEdit.resetBezier();
+    }
+    resetSelectionForNewTool(tool);
+    resetToolModes(tool);
+    if (stack.isEditingMask() && !herramientaDePintura() && tool != ToolType::PenBezier)
+        stack.exitMaskEdit();
+}
+
 void PaintArea::applyToolPreset(ToolType tool) {
     if (ToolManager::isArtistic(tool)) {
         classicToolPreset = ArtisticPresets::presetForTool(tool);
@@ -1079,55 +1106,62 @@ bool PaintArea::handleTool(const ToolCtx &ctx) {
         return true;
     }
 
-    bool handled = false;
-    switch (currentTool) {
-    case ToolType::Pencil:       handled = toolPencil(ctx); break;
-    case ToolType::Eraser:       handled = toolEraser(ctx); break;
-    case ToolType::Picker:       handled = toolPicker(ctx); break;
-    case ToolType::Bucket:       handled = toolBucket(ctx); break;
-    case ToolType::LassoExtract: handled = toolLasso(ctx); break;
-    case ToolType::LassoDelete:  handled = toolLasso(ctx); break;
-    case ToolType::Gradient:     handled = toolGradient(ctx); break;
-    case ToolType::MagicWand:    handled = toolMagicWand(ctx); break;
-    case ToolType::Blur:
-    case ToolType::Heal:
-    case ToolType::ShadowBurn:   handled = toolRetouch(ctx); break;
-    case ToolType::Clone:        handled = toolClone(ctx); break;
-    case ToolType::Deform:       handled = toolDeform(ctx); break;
-    case ToolType::Zoom:         handled = toolZoom(ctx); break;
-    case ToolType::MirrorPen:
-    case ToolType::Lighten:      handled = toolPixelArt(ctx); break;
-    case ToolType::Brush:
-    case ToolType::Spray:
-    case ToolType::Crayon:
-    case ToolType::Marker:
-    case ToolType::Watercolor:
-    case ToolType::OilBrush:
-    case ToolType::Calligraphy:
-    case ToolType::Highlighter:
-    case ToolType::CustomBrush:  handled = toolBrushStamp(ctx); break;
-    case ToolType::Line:
-    case ToolType::Rectangle:
-    case ToolType::Ellipse:
-    case ToolType::RoundRect:
-    case ToolType::Triangle:
-    case ToolType::RightTriangle:
-    case ToolType::Diamond:
-    case ToolType::Pentagon:
-    case ToolType::Hexagon:
-    case ToolType::ArrowRight:
-    case ToolType::ArrowLeft:
-    case ToolType::Star:
-    case ToolType::Heart:
-    case ToolType::Cube:
-    case ToolType::PixelStroke:  handled = toolShape(ctx); break;
-    case ToolType::PenBezier:    handled = toolPenBezier(ctx); break;
-    case ToolType::Select:       handled = toolSelect(ctx); break;
-    case ToolType::SelectFree:   handled = toolSelectFree(ctx); break;
-    case ToolType::Text:         handled = toolText(ctx); break;
-    case ToolType::Move:         handled = toolMove(ctx); break;
-    default: handled = false; break;
+    struct Entry { ToolType tool; DispatchFn fn; };
+    static const Entry kTable[] = {
+        { ToolType::Pencil,        &PaintArea::toolPencil     },
+        { ToolType::Eraser,        &PaintArea::toolEraser     },
+        { ToolType::Picker,        &PaintArea::toolPicker     },
+        { ToolType::Bucket,        &PaintArea::toolBucket     },
+        { ToolType::Zoom,          &PaintArea::toolZoom       },
+        { ToolType::MagicWand,     &PaintArea::toolMagicWand  },
+        { ToolType::PenBezier,     &PaintArea::toolPenBezier  },
+        { ToolType::Select,        &PaintArea::toolSelect     },
+        { ToolType::SelectFree,    &PaintArea::toolSelectFree },
+        { ToolType::Text,          &PaintArea::toolText       },
+        { ToolType::Move,          &PaintArea::toolMove       },
+        { ToolType::Gradient,      &PaintArea::toolGradient   },
+        { ToolType::Clone,         &PaintArea::toolClone      },
+        { ToolType::Deform,        &PaintArea::toolDeform     },
+        { ToolType::LassoExtract,  &PaintArea::toolLasso      },
+        { ToolType::LassoDelete,   &PaintArea::toolLasso      },
+        { ToolType::Blur,          &PaintArea::toolRetouch    },
+        { ToolType::Heal,          &PaintArea::toolRetouch    },
+        { ToolType::ShadowBurn,    &PaintArea::toolRetouch    },
+        { ToolType::MirrorPen,     &PaintArea::toolPixelArt   },
+        { ToolType::Lighten,       &PaintArea::toolPixelArt   },
+        { ToolType::Brush,         &PaintArea::toolBrushStamp },
+        { ToolType::Spray,         &PaintArea::toolBrushStamp },
+        { ToolType::Crayon,        &PaintArea::toolBrushStamp },
+        { ToolType::Marker,        &PaintArea::toolBrushStamp },
+        { ToolType::Watercolor,    &PaintArea::toolBrushStamp },
+        { ToolType::OilBrush,      &PaintArea::toolBrushStamp },
+        { ToolType::Calligraphy,   &PaintArea::toolBrushStamp },
+        { ToolType::Highlighter,   &PaintArea::toolBrushStamp },
+        { ToolType::CustomBrush,   &PaintArea::toolBrushStamp },
+        { ToolType::Line,          &PaintArea::toolShape      },
+        { ToolType::Rectangle,     &PaintArea::toolShape      },
+        { ToolType::Ellipse,       &PaintArea::toolShape      },
+        { ToolType::RoundRect,     &PaintArea::toolShape      },
+        { ToolType::Triangle,      &PaintArea::toolShape      },
+        { ToolType::RightTriangle, &PaintArea::toolShape      },
+        { ToolType::Diamond,       &PaintArea::toolShape      },
+        { ToolType::Pentagon,      &PaintArea::toolShape      },
+        { ToolType::Hexagon,       &PaintArea::toolShape      },
+        { ToolType::ArrowRight,    &PaintArea::toolShape      },
+        { ToolType::ArrowLeft,     &PaintArea::toolShape      },
+        { ToolType::Star,          &PaintArea::toolShape      },
+        { ToolType::Heart,         &PaintArea::toolShape      },
+        { ToolType::Cube,          &PaintArea::toolShape      },
+        { ToolType::PixelStroke,   &PaintArea::toolShape      },
+    };
+
+    DispatchFn fn = nullptr;
+    for (const Entry &e : kTable) {
+        if (e.tool == currentTool) { fn = e.fn; break; }
     }
+
+    bool handled = false;
+    if (fn) handled = (this->*fn)(ctx);
 
     if (ctx.action == ToolAction::Move && !drawing && !handled && !ctx.continuous) {
         moveCursorUpdate(ctx.pos);

@@ -137,7 +137,7 @@ public:
     DeformOptc getDeformOptc() const { return m_deform.options(); }
 
     void bakeActivePath();
-    void setCustomBrushPresets(BrushSettings p1, BrushSettings p2, int activeIndex);
+    void setCustomBrushPresets(const BrushSettings &p1, const BrushSettings &p2, int activeIndex);
     BrushSettings getCustomBrush(int index) const;
     int getActiveCustomBrushIndex() const;
 
@@ -393,6 +393,8 @@ private:
     void refreshAndNotify(bool recompose = true);
     void bakeAllPending();
     void beginEdit();
+    void beginStroke(const ToolCtx &ctx);
+    bool endStroke();
     void configureMaskEditController();
     void renderTiles(QPainter &painter, const QRect &visibleWidgetRect);
     void sincronizarCapasConFrameActual();
@@ -514,6 +516,11 @@ private:
     bool handleGradientToolReentry(ToolType tool);
     void resetStateForToolSwitch(ToolType tool);
     void applyToolPreset(ToolType tool);
+
+    bool toolKeepsSelectionAlive(ToolType tool) const;
+    bool toolKeepsFreeModeAlive(ToolType tool) const;
+    void resetSelectionForNewTool(ToolType tool);
+    void resetToolModes(ToolType tool);
 
     void paintCheckerboard(QPainter &painter, const QRect &canvasRect);
     void paintMaskOverlay(QPainter &painter);

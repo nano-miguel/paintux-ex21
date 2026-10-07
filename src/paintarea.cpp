@@ -7,6 +7,7 @@ FrameThumbnail::FrameThumbnail(const QImage &img, int index, QWidget *parent)
     setCursor(Qt::PointingHandCursor);
     setToolTip(tr("Frame %1").arg(index + 1));
 }
+
 void FrameThumbnail::setSelected(bool selected) { isSelected = selected; update(); }
 void FrameThumbnail::setFrameImage(const QImage &img) { frameImage = img; update(); }
 int  FrameThumbnail::getFrameIndex() const { return frameIndex; }
@@ -32,6 +33,7 @@ void FrameThumbnail::paintEvent(QPaintEvent *) {
     painter.setFont(QFont("Adwaita Sans", 8));
     painter.drawText(QRect(0, THUMB_SIZE + 6, width(), 14), Qt::AlignCenter, QString::number(frameIndex + 1));
 }
+
 void FrameThumbnail::mousePressEvent(QMouseEvent *) { emit clicked(frameIndex); }
 
 QColor PaintArea::selBlue() const { return darkModeActive ? QColor("#60a5fa") : QColor("#2563eb"); }
@@ -65,6 +67,23 @@ void PaintArea::bakeAllPending() {
 }
 
 void PaintArea::beginEdit() { bakeAllPending(); saveHistoryState(); }
+
+void PaintArea::beginStroke(const ToolCtx &ctx) {
+    saveHistoryState();
+    startPoint = ctx.pos;
+    lastPoint = ctx.pos;
+    currentMousePos = ctx.pos;
+    drawing = true;
+}
+
+bool PaintArea::endStroke() {
+    if (!drawing) return false;
+    drawing = false;
+    activeMouseButton = Qt::NoButton;
+    emit layersChanged();
+    update();
+    return true;
+}
 
 void PaintArea::configureMaskEditController() {
     MaskEditController::Context ctx;
@@ -250,8 +269,10 @@ void PaintArea::bakeObjectIntoLayer(int idx) {
     if (idx < 0 || idx >= selMgr.objectCount()) return;
     const PaintObject &obj = selMgr.objectAt(idx);
     int layerIdx = obj.layerIndex;
-    if (!capaValida(layerIdx)) layerIdx = stack.currentIndex();
-    if (!capaValida(layerIdx)) return;
+    if (!capaValida(layerIdx)) {
+        layerIdx = stack.currentIndex();
+        if (!capaValida(layerIdx)) return;
+    }
     selMgr.bakeObjectInto(idx, stack.layerAt(layerIdx).image, !pixelOptions.getIsPixelArtMode());
 }
 
@@ -396,7 +417,7 @@ void PaintArea::bakeActivePath() {
     emit layersChanged(); recomponerImagen(); update();
 }
 
-void PaintArea::setCustomBrushPresets(BrushSettings p1, BrushSettings p2, int activeIndex) {
+void PaintArea::setCustomBrushPresets(const BrushSettings &p1, const BrushSettings &p2, int activeIndex) {
     customBrushPresets[0] = p1; customBrushPresets[1] = p2;
     activeCustomBrushIndex = activeIndex; updateCustomBrushStamp();
 }
@@ -1105,79 +1126,6 @@ bool PaintArea::handleTool(const ToolCtx &ctx) {
     return handled;
 }
 
-bool PaintArea::toolPencil(const ToolCtx &ctx) {
-    switch (ctx.action) {
-    case ToolAction::Press: {
-        saveHistoryState();
-        startPoint = ctx.pos; lastPoint = ctx.pos; drawing = true; currentMousePos = ctx.pos;
-        QColor c = obtenerColorDeTrabajo(activeMouseButton); c.setAlpha(penOpacity);
-        if (capaValida()) {
-            PaintEngine::applyGraphitePencil(stack.currentImage(), ctx.pos, ctx.pos, c, ctx.scaledWidth, penOpacity);
-            invalidarTrazo(ctx.pos, ctx.pos); emit layersChanged();
-        }
-        return true;
-    }
-    case ToolAction::Move: {
-        if (!drawing) return false;
-        QColor c = obtenerColorDeTrabajo(activeMouseButton); c.setAlpha(penOpacity);
-        QPoint prev = lastPoint;
-        if (capaValida()) PaintEngine::applyGraphitePencil(stack.currentImage(), lastPoint, ctx.pos, c, ctx.scaledWidth, penOpacity);
-        lastPoint = ctx.pos; invalidarTrazo(prev, ctx.pos);
-        return true;
-    }
-    case ToolAction::Release: {
-        if (!drawing) return false;
-        drawing = false; activeMouseButton = Qt::NoButton;
-        emit layersChanged(); update();
-        return true;
-    }
-    default: return false;
-    }
-}
-
-bool PaintArea::toolEraser(const ToolCtx &ctx) {
-    switch (ctx.action) {
-    case ToolAction::Press: {
-        saveHistoryState();
-        startPoint = ctx.pos; lastPoint = ctx.pos; drawing = true; currentMousePos = ctx.pos;
-        if (capaValida()) {
-            PaintEngine::applyEraserLine(stack.currentImage(), ctx.pos, ctx.pos, ctx.scaledWidth, true);
-            invalidarTrazo(ctx.pos, ctx.pos); emit layersChanged();
-        }
-        return true;
-    }
-    case ToolAction::Move: {
-        if (!drawing) return false;
-        QPoint prev = lastPoint;
-        if (capaValida()) PaintEngine::applyEraserLine(stack.currentImage(), lastPoint, ctx.pos, ctx.scaledWidth, true);
-        lastPoint = ctx.pos; invalidarTrazo(prev, ctx.pos);
-        return true;
-    }
-    case ToolAction::Release: {
-        if (!drawing) return false;
-        drawing = false; activeMouseButton = Qt::NoButton;
-        emit layersChanged(); update();
-        return true;
-    }
-    default: return false;
-    }
-}
-
-bool PaintArea::toolPicker(const ToolCtx &ctx) {
-    if (ctx.action != ToolAction::Press) return true;
-    QColor picked = stack.compositedImage().pixelColor(ctx.pos);
-    emit colorPicked((activeMouseButton == Qt::LeftButton) ? 1 : 2, picked);
-    return true;
-}
-
-bool PaintArea::toolBucket(const ToolCtx &ctx) {
-    if (ctx.action != ToolAction::Press) return true;
-    QColor colorDeUso = obtenerColorDeTrabajo(activeMouseButton); colorDeUso.setAlpha(penOpacity);
-    saveHistoryState();
-    if (capaValida()) { PaintEngine::floodFill(stack.currentImage(), ctx.pos, colorDeUso); refreshAndNotify(); }
-    return true;
-}
-
 bool PaintArea::toolLasso(const ToolCtx &ctx) {
     switch (ctx.action) {
     case ToolAction::Press: {
@@ -1254,38 +1202,6 @@ bool PaintArea::toolMagicWand(const ToolCtx &ctx) {
     return true;
 }
 
-bool PaintArea::toolRetouch(const ToolCtx &ctx) {
-    switch (ctx.action) {
-    case ToolAction::Press: {
-        saveHistoryState();
-        startPoint = ctx.pos; lastPoint = ctx.pos; drawing = true; currentMousePos = ctx.pos;
-        if (capaValida()) {
-            RetouchTools::applyRetouchAlongLine(stack.currentImage(), ctx.pos, ctx.pos,
-                                                penWidth, mouseSensitivity, penOpacity, ToolManager::retouchCode(currentTool));
-            invalidarTrazo(ctx.pos, ctx.pos); emit layersChanged();
-        }
-        return true;
-    }
-    case ToolAction::Move: {
-        if (!drawing) return false;
-        QPoint prev = lastPoint;
-        if (capaValida()) {
-            RetouchTools::applyRetouchAlongLine(stack.currentImage(), lastPoint, ctx.pos,
-                                                penWidth, mouseSensitivity, penOpacity, ToolManager::retouchCode(currentTool));
-        }
-        lastPoint = ctx.pos; invalidarTrazo(prev, ctx.pos);
-        return true;
-    }
-    case ToolAction::Release: {
-        if (!drawing) return false;
-        drawing = false; activeMouseButton = Qt::NoButton;
-        emit layersChanged(); update();
-        return true;
-    }
-    default: return false;
-    }
-}
-
 bool PaintArea::toolClone(const ToolCtx &ctx) {
     switch (ctx.action) {
     case ToolAction::Press: {
@@ -1339,158 +1255,6 @@ bool PaintArea::toolDeform(const ToolCtx &ctx) {
     }
     default: return false;
     }
-}
-
-bool PaintArea::toolZoom(const ToolCtx &ctx) {
-    if (ctx.action != ToolAction::Press) return true;
-    QPoint viewportPos = mapToParent(ctx.rawPos);
-    if (ctx.button == Qt::LeftButton) emit zoomRequested(zoomFactor * 2.0, viewportPos);
-    else emit zoomRequested(zoomFactor / 2.0, viewportPos);
-    return true;
-}
-
-bool PaintArea::toolPixelArt(const ToolCtx &ctx) {
-    QColor colorDeUso = obtenerColorDeTrabajo(activeMouseButton); colorDeUso.setAlpha(penOpacity);
-    switch (ctx.action) {
-    case ToolAction::Press: {
-        saveHistoryState();
-        startPoint = ctx.pos; lastPoint = ctx.pos; drawing = true; currentMousePos = ctx.pos;
-        if (capaValida()) {
-            PixelArt::drawPixel(stack.currentImage(), ctx.pos, colorDeUso, currentTool, true);
-            invalidarTrazo(ctx.pos, ctx.pos); emit layersChanged();
-        }
-        return true;
-    }
-    case ToolAction::Move: {
-        if (!drawing) return false;
-        QPoint prev = lastPoint;
-        if (capaValida()) PixelArt::drawLine(stack.currentImage(), lastPoint, ctx.pos, colorDeUso, currentTool, true);
-        lastPoint = ctx.pos; invalidarTrazo(prev, ctx.pos);
-        return true;
-    }
-    case ToolAction::Release: {
-        if (!drawing) return false;
-        drawing = false; activeMouseButton = Qt::NoButton;
-        emit layersChanged(); update();
-        return true;
-    }
-    default: return false;
-    }
-}
-
-bool PaintArea::toolBrushStamp(const ToolCtx &ctx) {
-    switch (ctx.action) {
-    case ToolAction::Press: {
-        saveHistoryState();
-        startPoint = ctx.pos; lastPoint = ctx.pos; drawing = true; currentMousePos = ctx.pos;
-        strokeTotalLength = 0.0; strokeAccumulatedLength = 0.0;
-        QColor colorDeUso = obtenerColorDeTrabajo(activeMouseButton); colorDeUso.setAlpha(penOpacity);
-        QColor colorOpuesto = obtenerColorDeTrabajo(activeMouseButton == Qt::LeftButton ? Qt::RightButton : Qt::LeftButton);
-        strokeCanvasFallback = QColor();
-        if (ToolManager::isArtistic(currentTool) && activePreset().wetMix)
-            strokeCanvasFallback = PaintEngine::sampleCanvasColor(stack.compositedImage(), ctx.pos, qMax(3, ctx.scaledWidth));
-        const BrushSettings &preset = activePreset();
-        lastClassicPoint = ctx.pos;
-        if (preset.isAirbrush || preset.dragMode == DragMode::Scattered) continuousDrawTimer->start(16);
-        if (capaValida()) {
-            PaintEngine::applyCustomBrushStroke(stack.currentImage(), ctx.pos, activeStamp(), preset, mouseSensitivity,
-                                                0.0, 1.0, 1.0, colorDeUso, colorOpuesto, strokeCanvasFallback);
-            invalidarTrazo(ctx.pos, ctx.pos); emit layersChanged();
-        }
-        return true;
-    }
-    case ToolAction::Move: {
-        if (!drawing) return false;
-        QColor colorDeUso = obtenerColorDeTrabajo(activeMouseButton); colorDeUso.setAlpha(penOpacity);
-        QColor colorOpuesto = obtenerColorDeTrabajo(activeMouseButton == Qt::LeftButton ? Qt::RightButton : Qt::LeftButton);
-
-        if (ctx.continuous) {
-            if (capaValida()) {
-                PaintEngine::applyCustomBrushStroke(stack.currentImage(), ctx.pos, activeStamp(),
-                                                    activePreset(), mouseSensitivity,
-                                                    0.0, 1.0, 1.0, colorDeUso, colorOpuesto, strokeCanvasFallback);
-                invalidarTrazo(ctx.pos, ctx.pos);
-            }
-            return true;
-        }
-
-        QPoint prev = lastPoint;
-        if (capaValida()) {
-            const double segLen = QLineF(lastClassicPoint, QPointF(ctx.pos)).length();
-            strokeAccumulatedLength += segLen;
-            const double estimatedTotal = strokeAccumulatedLength + segLen * 10.0;
-            if (estimatedTotal > strokeTotalLength) strokeTotalLength = estimatedTotal;
-            PaintEngine::applyCustomBrushLine(stack.currentImage(), lastClassicPoint, ctx.pos, activeStamp(), activePreset(),
-                                              mouseSensitivity, lastClassicPoint, colorDeUso, colorOpuesto, strokeCanvasFallback,
-                                              strokeTotalLength, strokeAccumulatedLength - segLen);
-        }
-        lastClassicPoint = ctx.pos; lastPoint = ctx.pos;
-        invalidarTrazo(prev, ctx.pos);
-        return true;
-    }
-    case ToolAction::Release: {
-        if (!drawing) return false;
-        strokeTotalLength = strokeAccumulatedLength; strokeAccumulatedLength = 0.0;
-        drawing = false; activeMouseButton = Qt::NoButton;
-        emit layersChanged(); update();
-        return true;
-    }
-    default: return false;
-    }
-}
-
-bool PaintArea::toolShape(const ToolCtx &ctx) {
-    switch (ctx.action) {
-    case ToolAction::Press: {
-        saveHistoryState();
-        startPoint = ctx.pos; lastPoint = ctx.pos; drawing = true;
-        return true;
-    }
-    case ToolAction::Move: {
-        if (!drawing) return false;
-        QPoint prev = lastPoint; lastPoint = ctx.pos;
-        invalidarTrazo(prev, ctx.pos, QRect(startPoint, prev).normalized());
-        return true;
-    }
-    case ToolAction::Release: {
-        if (!drawing) return false;
-        drawing = false;
-        QColor colorDeUso = obtenerColorDeTrabajo(activeMouseButton); colorDeUso.setAlpha(penOpacity);
-        if (pixelOptions.getIsPixelArtMode()) {
-            if (!capaValida()) { activeMouseButton = Qt::NoButton; return true; }
-            if (currentTool == ToolType::PixelStroke || currentTool == ToolType::Line)
-                PixelArt::drawShape(stack.currentImage(), startPoint, ctx.pos, colorDeUso, currentTool);
-            else {
-                QPainter painter(&stack.currentImage());
-                painter.setRenderHint(QPainter::Antialiasing, false);
-                painter.setPen(QPen(colorDeUso, ctx.scaledWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                PaintEngine::drawGeometry(painter, startPoint, ctx.pos, currentTool);
-                painter.end();
-            }
-            recomponerImagen();
-        } else if (ToolManager::isShape(currentTool)) {
-            selMgr.registerShapeObject(currentTool, startPoint, ctx.pos, colorDeUso, colorDeUso, ctx.scaledWidth, stack.currentIndex());
-        } else {
-            if (capaValida()) {
-                QPainter painter(&stack.currentImage());
-                painter.setRenderHint(QPainter::Antialiasing, true);
-                painter.setPen(QPen(colorDeUso, ctx.scaledWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                PaintEngine::drawGeometry(painter, startPoint, ctx.pos, currentTool);
-                painter.end();
-                recomponerImagen();
-            }
-        }
-        emit layersChanged(); activeMouseButton = Qt::NoButton; update();
-        return true;
-    }
-    default: return false;
-    }
-}
-
-bool PaintArea::toolPenBezier(const ToolCtx &ctx) {
-    if (ctx.action != ToolAction::Press) return true;
-    pressPenBezier(ctx.pos);
-    return true;
 }
 
 bool PaintArea::toolSelect(const ToolCtx &ctx) {

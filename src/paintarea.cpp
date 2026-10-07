@@ -1,3 +1,4 @@
+
 #include "paintarea.h"
 #include "utils/ExifLoader.h"
 
@@ -540,12 +541,20 @@ void PaintArea::applyImageFilters(const QImage &filteredImage) {
     if (!puedeEditarCapaActual()) { if (capaValida()) emit statusBarMessage(tr("Capa bloqueada")); return; }
     saveHistoryState(); stack.currentImage() = filteredImage; refreshAndNotify();
 }
+
 void PaintArea::flipCurrentLayer(bool horizontal, bool vertical) {
-    if (!puedeEditarCapaActual()) return;
+    if (!puedeEditarCapaActual()) {
+        if (capaValida()) emit statusBarMessage(tr("Capa bloqueada"));
+        return;
+    }
     saveHistoryState(); stack.flipCurrent(horizontal, vertical); refreshAndNotify(false);
 }
+
 void PaintArea::rotateCurrentLayer(int angle) {
-    if (!puedeEditarCapaActual()) return;
+    if (!puedeEditarCapaActual()) {
+        if (capaValida()) emit statusBarMessage(tr("Capa bloqueada"));
+        return;
+    }
     saveHistoryState(); stack.rotateCurrent(angle); refreshAndNotify(false);
 }
 
